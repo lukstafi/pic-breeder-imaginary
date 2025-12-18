@@ -74,10 +74,15 @@ let render_to_texture renderer expr color_mode viewport width height =
   let img_height = Array.length img in
   let img_width = if img_height > 0 then Array.length img.(0) else 0 in
 
-  (* Create RGB surface *)
-  match Sdl.create_rgb_surface ~w:img_width ~h:img_height ~depth:24
-          (Int32.of_int 0x0000FF) (Int32.of_int 0x00FF00)
-          (Int32.of_int 0xFF0000) Int32.zero with
+  (* Use 32-bit RGBA surface for cross-platform consistency *)
+  (* On little-endian (macOS, x86), memory layout is ABGR when we write RGBA as 32-bit int *)
+  (* But we write bytes directly, so use masks that match byte order: R at lowest address *)
+  let rmask = Int32.of_int 0x000000FF in  (* R is first byte *)
+  let gmask = Int32.of_int 0x0000FF00 in  (* G is second byte *)
+  let bmask = Int32.of_int 0x00FF0000 in  (* B is third byte *)
+  let amask = Int32.of_int 0xFF000000 in  (* A is fourth byte *)
+  match Sdl.create_rgb_surface ~w:img_width ~h:img_height ~depth:32
+          rmask gmask bmask amask with
   | Error (`Msg e) -> failwith ("Failed to create surface: " ^ e)
   | Ok surface ->
     (* Lock surface for pixel access *)
@@ -89,10 +94,12 @@ let render_to_texture renderer expr color_mode viewport width height =
        for y = 0 to img_height - 1 do
          for x = 0 to img_width - 1 do
            let c = img.(y).(x) in
-           let offset = y * pitch + x * 3 in
-           Bigarray.Array1.set pixels offset c.b;
+           let offset = y * pitch + x * 4 in
+           (* Write RGBA bytes in order - matches the masks above *)
+           Bigarray.Array1.set pixels offset c.r;
            Bigarray.Array1.set pixels (offset + 1) c.g;
-           Bigarray.Array1.set pixels (offset + 2) c.r;
+           Bigarray.Array1.set pixels (offset + 2) c.b;
+           Bigarray.Array1.set pixels (offset + 3) 255;  (* Alpha = opaque *)
          done
        done;
        Sdl.unlock_surface surface);
