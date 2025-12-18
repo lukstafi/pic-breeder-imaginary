@@ -333,24 +333,30 @@ module Gui = struct
     (* Range label showing current slider range *)
     let range_label = W.label (Printf.sprintf "Range: +/-%.4f" slider_range) in
 
-    (* Expression label *)
-    let expr_str = to_string expr in
-    let truncated = if String.length expr_str > 50 then String.sub expr_str 0 50 ^ "..." else expr_str in
-    let expr_label = W.label (Printf.sprintf "Expr: %s" truncated) in
+    (* Expression size info *)
+    let expr_size = count_nodes expr in
+    let size_label = W.label (Printf.sprintf "Size: %d nodes, %d constants" expr_size num_constants) in
 
     (* Scrollable slider area *)
     let sliders_col = L.tower ~sep:5 slider_layouts in
-    let sliders_scroll = L.make_clip ~h:250 sliders_col in
+    let sliders_scroll = L.make_clip ~h:200 sliders_col in
 
     (* Right panel with sliders and buttons *)
     let right_panel = L.tower ~sep:10 [
-      L.resident expr_label;
+      L.resident size_label;
       L.flat ~sep:10 [L.resident range_label; L.resident zoom_in_btn; L.resident zoom_out_btn];
       sliders_scroll;
       L.flat ~sep:10 [L.resident back_btn; L.resident save_btn]
     ] in
 
-    L.flat ~sep:20 [img_layout; right_panel]
+    (* Full expression text area at the bottom *)
+    let expr_str = to_string expr in
+    let expr_text = W.text_display ~w:700 ~h:100 expr_str in
+    let expr_scroll = L.make_clip ~w:700 ~h:100 (L.resident expr_text) in
+
+    (* Main layout: image and controls on top, expression below *)
+    let top_row = L.flat ~sep:20 [img_layout; right_panel] in
+    L.tower ~sep:10 [top_row; expr_scroll]
 
   (* Function to recreate edit view (used by zoom buttons) *)
   let recreate_edit_view state idx =
@@ -410,10 +416,15 @@ module Gui = struct
 
     let grid_layout = L.resident ~w:total_width ~h:total_height grid_widget in
 
-    (* Status bar *)
-    let status = W.label (Printf.sprintf "Gen %d | %s | %s"
+    (* Status bar with expression sizes *)
+    let sizes = Array.map (fun e -> count_nodes e) state.variants in
+    let min_size = Array.fold_left min sizes.(0) sizes in
+    let max_size = Array.fold_left max sizes.(0) sizes in
+    let avg_size = Array.fold_left (+) 0 sizes / Array.length sizes in
+    let status = W.label (Printf.sprintf "Gen %d | %s | %s | Sizes: %d-%d (avg %d)"
                            state.generation (color_mode_to_string state.color_mode)
-                           (complexity_mode_to_string state.complexity_mode)) in
+                           (complexity_mode_to_string state.complexity_mode)
+                           min_size max_size avg_size) in
     let status_layout = L.resident status in
 
     (* Control buttons *)
@@ -425,9 +436,14 @@ module Gui = struct
 
     (* Helper to refresh the grid *)
     let refresh_grid () =
-      W.set_text status (Printf.sprintf "Gen %d | %s | %s"
+      let sizes = Array.map (fun e -> count_nodes e) state.variants in
+      let min_size = Array.fold_left min sizes.(0) sizes in
+      let max_size = Array.fold_left max sizes.(0) sizes in
+      let avg_size = Array.fold_left (+) 0 sizes / Array.length sizes in
+      W.set_text status (Printf.sprintf "Gen %d | %s | %s | Sizes: %d-%d (avg %d)"
                           state.generation (color_mode_to_string state.color_mode)
-                          (complexity_mode_to_string state.complexity_mode));
+                          (complexity_mode_to_string state.complexity_mode)
+                          min_size max_size avg_size);
       Sdl_area.clear widget_area;
       Sdl_area.add widget_area ~name:"grid" draw;
       Sdl_area.update widget_area
