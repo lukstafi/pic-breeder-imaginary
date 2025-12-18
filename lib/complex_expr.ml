@@ -86,6 +86,10 @@ let c_clamp z =
   in
   { re = clamp_val z.re; im = clamp_val z.im }
 
+(* Max and Min by magnitude *)
+let c_max a b = if c_abs a >= c_abs b then a else b
+let c_min a b = if c_abs a <= c_abs b then a else b
+
 (** Expression AST *)
 type expr =
   | Var                         (* The input variable z *)
@@ -111,6 +115,8 @@ type expr =
   | Spiral of expr              (* Custom spiral transform *)
   | Wave of expr                (* Custom wave transform *)
   | Loop of expr * expr         (* Loop(n, body): iterate body floor(|n|) times *)
+  | Max of expr * expr          (* Value with larger magnitude *)
+  | Min of expr * expr          (* Value with smaller magnitude *)
 
 (** Evaluate an expression given z *)
 let rec eval z = function
@@ -153,6 +159,8 @@ let rec eval z = function
       (* Interpolate between floor and ceil results *)
       c_add (c_mul { re = 1.0 -. frac; im = 0.0 } result_floor)
             (c_mul { re = frac; im = 0.0 } result_ceil)
+  | Max (a, b) -> c_max (eval z a) (eval z b)
+  | Min (a, b) -> c_min (eval z a) (eval z b)
 
 (** Pretty print expression *)
 let rec to_string = function
@@ -181,12 +189,14 @@ let rec to_string = function
   | Spiral e -> Printf.sprintf "spiral(%s)" (to_string e)
   | Wave e -> Printf.sprintf "wave(%s)" (to_string e)
   | Loop (n, body) -> Printf.sprintf "loop(%s, %s)" (to_string n) (to_string body)
+  | Max (a, b) -> Printf.sprintf "max(%s, %s)" (to_string a) (to_string b)
+  | Min (a, b) -> Printf.sprintf "min(%s, %s)" (to_string a) (to_string b)
 
 (** Count nodes in expression (for complexity control) *)
 let rec size = function
   | Var | Const _ -> 1
   | Add (a, b) | Sub (a, b) | Mul (a, b) | Div (a, b) | Pow (a, b)
-  | Loop (a, b) ->
+  | Loop (a, b) | Max (a, b) | Min (a, b) ->
     1 + size a + size b
   | Exp e | Log e | Sin e | Cos e | Sinh e | Cosh e | Tanh e
   | Sqrt e | Conj e | Abs e | Arg e | Re e | Im e | Spiral e | Wave e ->
@@ -196,7 +206,7 @@ let rec size = function
 let rec depth = function
   | Var | Const _ -> 1
   | Add (a, b) | Sub (a, b) | Mul (a, b) | Div (a, b) | Pow (a, b)
-  | Loop (a, b) ->
+  | Loop (a, b) | Max (a, b) | Min (a, b) ->
     1 + max (depth a) (depth b)
   | Exp e | Log e | Sin e | Cos e | Sinh e | Cosh e | Tanh e
   | Sqrt e | Conj e | Abs e | Arg e | Re e | Im e | Spiral e | Wave e ->
@@ -209,7 +219,7 @@ let collect_constants expr =
     | Var -> (acc, idx)
     | Const c -> ((idx, c) :: acc, idx + 1)
     | Add (a, b) | Sub (a, b) | Mul (a, b) | Div (a, b) | Pow (a, b)
-    | Loop (a, b) ->
+    | Loop (a, b) | Max (a, b) | Min (a, b) ->
       let (acc, idx) = aux idx a acc in
       aux idx b acc
     | Exp e | Log e | Sin e | Cos e | Sinh e | Cosh e | Tanh e
@@ -235,6 +245,8 @@ let replace_constant idx new_val expr =
     | Div (a, b) -> let a = aux a in let b = aux b in Div (a, b)
     | Pow (a, b) -> let a = aux a in let b = aux b in Pow (a, b)
     | Loop (a, b) -> let a = aux a in let b = aux b in Loop (a, b)
+    | Max (a, b) -> let a = aux a in let b = aux b in Max (a, b)
+    | Min (a, b) -> let a = aux a in let b = aux b in Min (a, b)
     | Exp e -> Exp (aux e)
     | Log e -> Log (aux e)
     | Sin e -> Sin (aux e)

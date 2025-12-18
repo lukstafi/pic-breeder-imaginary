@@ -68,6 +68,8 @@ let binary_ops = [|
   (fun a b -> Div (a, b));
   (fun a b -> Pow (a, b));
   (fun a b -> Loop (a, b));
+  (fun a b -> Max (a, b));
+  (fun a b -> Min (a, b));
 |]
 
 (** Generate a random simple expression *)
@@ -94,7 +96,7 @@ let rec count_nodes expr =
   match expr with
   | Var | Const _ -> 1
   | Add (a, b) | Sub (a, b) | Mul (a, b) | Div (a, b) | Pow (a, b)
-  | Loop (a, b) ->
+  | Loop (a, b) | Max (a, b) | Min (a, b) ->
     1 + count_nodes a + count_nodes b
   | Exp e | Log e | Sin e | Cos e | Sinh e | Cosh e | Tanh e
   | Sqrt e | Conj e | Abs e | Arg e | Re e | Im e | Spiral e | Wave e ->
@@ -107,7 +109,7 @@ let rec get_node expr n =
     match expr with
     | Var | Const _ -> None
     | Add (a, b) | Sub (a, b) | Mul (a, b) | Div (a, b) | Pow (a, b)
-    | Loop (a, b) ->
+    | Loop (a, b) | Max (a, b) | Min (a, b) ->
       let left_size = count_nodes a in
       if n - 1 < left_size then get_node a (n - 1)
       else get_node b (n - 1 - left_size)
@@ -160,6 +162,14 @@ let rec replace_node expr n replacement =
       let left_size = count_nodes a in
       if n - 1 < left_size then Loop (replace_node a (n - 1) replacement, b)
       else Loop (a, replace_node b (n - 1 - left_size) replacement)
+    | Max (a, b) ->
+      let left_size = count_nodes a in
+      if n - 1 < left_size then Max (replace_node a (n - 1) replacement, b)
+      else Max (a, replace_node b (n - 1 - left_size) replacement)
+    | Min (a, b) ->
+      let left_size = count_nodes a in
+      if n - 1 < left_size then Min (replace_node a (n - 1) replacement, b)
+      else Min (a, replace_node b (n - 1 - left_size) replacement)
 
 (** Mutation: replace a random subtree *)
 let mutate_replace expr =
@@ -202,11 +212,11 @@ let mutate_simplify expr =
       (* Try to extract a child *)
       let child = match node with
         | Add (a, _) | Sub (a, _) | Mul (a, _) | Div (a, _) | Pow (a, _)
-        | Loop (a, _) ->
+        | Loop (a, _) | Max (a, _) | Min (a, _) ->
           if random_bool () then Some a else
             (match node with
              | Add (_, b) | Sub (_, b) | Mul (_, b) | Div (_, b) | Pow (_, b)
-             | Loop (_, b) -> Some b
+             | Loop (_, b) | Max (_, b) | Min (_, b) -> Some b
              | _ -> None)
         | Exp e | Log e | Sin e | Cos e | Sinh e | Cosh e | Tanh e
         | Sqrt e | Conj e | Abs e | Arg e | Re e | Im e | Spiral e | Wave e ->
@@ -244,6 +254,8 @@ let rec mutate_constants expr prob =
   | Spiral e -> Spiral (mutate_constants e prob)
   | Wave e -> Wave (mutate_constants e prob)
   | Loop (a, b) -> Loop (mutate_constants a prob, mutate_constants b prob)
+  | Max (a, b) -> Max (mutate_constants a prob, mutate_constants b prob)
+  | Min (a, b) -> Min (mutate_constants a prob, mutate_constants b prob)
 
 (** Mutation: change a unary operation to another *)
 let mutate_change_unary expr =
@@ -251,7 +263,7 @@ let mutate_change_unary expr =
     match expr with
     | Var | Const _ -> acc
     | Add (a, b) | Sub (a, b) | Mul (a, b) | Div (a, b) | Pow (a, b)
-    | Loop (a, b) ->
+    | Loop (a, b) | Max (a, b) | Min (a, b) ->
       let acc = find_unary_indices a (idx + 1) acc in
       find_unary_indices b (idx + 1 + count_nodes a) acc
     | Exp _ | Log _ | Sin _ | Cos _ | Sinh _ | Cosh _ | Tanh _
@@ -279,7 +291,7 @@ let mutate_change_binary expr =
     match expr with
     | Var | Const _ -> acc
     | Add (a, b) | Sub (a, b) | Mul (a, b) | Div (a, b) | Pow (a, b)
-    | Loop (a, b) ->
+    | Loop (a, b) | Max (a, b) | Min (a, b) ->
       let acc = idx :: acc in
       let acc = find_binary_indices a (idx + 1) acc in
       find_binary_indices b (idx + 1 + count_nodes a) acc
@@ -296,7 +308,7 @@ let mutate_change_binary expr =
     | Some node ->
       let (left, right) = match node with
         | Add (a, b) | Sub (a, b) | Mul (a, b) | Div (a, b) | Pow (a, b)
-        | Loop (a, b) -> (a, b)
+        | Loop (a, b) | Max (a, b) | Min (a, b) -> (a, b)
         | _ -> (Var, Var)
       in
       let op = binary_ops.(random_int (Array.length binary_ops)) in
