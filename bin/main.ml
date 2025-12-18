@@ -48,6 +48,7 @@ type state = {
   mutable variants : expr array;
   mutable generation : int;
   mutable color_mode : color_mode;
+  mutable complexity_mode : complexity_mode;
   mutable history : history_entry list;
   mutable viewport : viewport;
   mutable mode : app_mode;
@@ -111,6 +112,7 @@ let init_random () =
     variants;
     generation = 0;
     color_mode = ColorWheel;
+    complexity_mode = Mutation.Maintain;
     history = [];
     viewport = default_viewport;
     mode = GridMode;
@@ -143,7 +145,7 @@ let evolve state selection =
   if selection >= 0 && selection < Array.length state.variants then begin
     push_history state;
     state.current_expr <- state.variants.(selection);
-    state.variants <- generate_variants state.current_expr num_variants;
+    state.variants <- generate_variants ~mode:state.complexity_mode state.current_expr num_variants;
     state.variants.(0) <- state.current_expr;
     state.generation <- state.generation + 1;
     true
@@ -402,8 +404,9 @@ module Gui = struct
     let grid_layout = L.resident ~w:total_width ~h:total_height grid_widget in
 
     (* Status bar *)
-    let status = W.label (Printf.sprintf "Gen %d | %s | Click=evolve, Ctrl+Click=edit"
-                           state.generation (color_mode_to_string state.color_mode)) in
+    let status = W.label (Printf.sprintf "Gen %d | %s | %s"
+                           state.generation (color_mode_to_string state.color_mode)
+                           (complexity_mode_to_string state.complexity_mode)) in
     let status_layout = L.resident status in
 
     (* Control buttons *)
@@ -411,11 +414,13 @@ module Gui = struct
     let reset_btn = W.button "Reset" in
     let regen_btn = W.button "Regen" in
     let color_btn = W.button "Color" in
+    let complexity_btn = W.button "Complexity" in
 
     (* Helper to refresh the grid *)
     let refresh_grid () =
-      W.set_text status (Printf.sprintf "Gen %d | %s | Click=evolve, Ctrl+Click=edit"
-                          state.generation (color_mode_to_string state.color_mode));
+      W.set_text status (Printf.sprintf "Gen %d | %s | %s"
+                          state.generation (color_mode_to_string state.color_mode)
+                          (complexity_mode_to_string state.complexity_mode));
       Sdl_area.clear widget_area;
       Sdl_area.add widget_area ~name:"grid" draw;
       Sdl_area.update widget_area
@@ -439,7 +444,7 @@ module Gui = struct
 
     let regen_action _ _ _ =
       push_history state;
-      state.variants <- generate_variants state.current_expr num_variants;
+      state.variants <- generate_variants ~mode:state.complexity_mode state.current_expr num_variants;
       state.variants.(0) <- state.current_expr;
       refresh_grid ()
     in
@@ -454,6 +459,16 @@ module Gui = struct
       refresh_grid ()
     in
     W.add_connection color_btn (W.connect color_btn color_btn color_action T.buttons_up);
+
+    let complexity_action _ _ _ =
+      let modes = all_complexity_modes in
+      let current_idx = ref 0 in
+      Array.iteri (fun i m -> if m = state.complexity_mode then current_idx := i) modes;
+      let next_idx = (!current_idx + 1) mod Array.length modes in
+      state.complexity_mode <- modes.(next_idx);
+      refresh_grid ()
+    in
+    W.add_connection complexity_btn (W.connect complexity_btn complexity_btn complexity_action T.buttons_up);
 
     (* Grid click handler *)
     let grid_click_action _ _ ev =
@@ -499,6 +514,7 @@ module Gui = struct
       L.resident reset_btn;
       L.resident regen_btn;
       L.resident color_btn;
+      L.resident complexity_btn;
     ] in
 
     L.tower ~sep:10 [

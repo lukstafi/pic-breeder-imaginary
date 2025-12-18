@@ -2,6 +2,21 @@
 
 open Complex_expr
 
+(** Complexity evolution mode *)
+type complexity_mode =
+  | Decrease      (* Favor simplification *)
+  | Maintain      (* Keep roughly the same complexity *)
+  | SlowIncrease  (* Gradually increase complexity *)
+  | FastIncrease  (* Rapidly increase complexity *)
+
+let complexity_mode_to_string = function
+  | Decrease -> "Decrease"
+  | Maintain -> "Maintain"
+  | SlowIncrease -> "Slow+"
+  | FastIncrease -> "Fast+"
+
+let all_complexity_modes = [| Decrease; Maintain; SlowIncrease; FastIncrease |]
+
 (** Random number generator state *)
 let rng = Random.State.make_self_init ()
 
@@ -287,17 +302,16 @@ let mutate_change_binary expr =
       let op = binary_ops.(random_int (Array.length binary_ops)) in
       replace_node expr idx (op left right)
 
-(** Apply a random mutation *)
-let mutate ?(growth_bias=0.6) expr =
-  let max_size = 80 in
-  let min_interesting_size = 8 in
-  let current_size = count_nodes expr in
-  (* Bias towards growth for small expressions, towards simplification for large *)
-  let growth_factor =
-    if current_size < min_interesting_size then 0.85
-    else if current_size > max_size then 0.1
-    else growth_bias
-  in
+(** Get growth bias from complexity mode *)
+let growth_bias_of_mode = function
+  | Decrease -> 0.2       (* 20% growth, 80% simplify/neutral *)
+  | Maintain -> 0.5       (* 50/50 balance *)
+  | SlowIncrease -> 0.65  (* 65% growth *)
+  | FastIncrease -> 0.85  (* 85% growth *)
+
+(** Apply a random mutation based on complexity mode *)
+let mutate ?(mode=Maintain) expr =
+  let growth_factor = growth_bias_of_mode mode in
   let r = random_float 0.0 1.0 in
   if r < growth_factor then
     (* Growth-promoting mutations *)
@@ -313,33 +327,27 @@ let mutate ?(growth_bias=0.6) expr =
   else
     (* Neutral or simplifying mutations *)
     match random_int 10 with
-    | 0 -> mutate_simplify expr               (* 10%: simplify *)
-    | 1 | 2 -> mutate_replace expr            (* 20%: replace subtree *)
-    | 3 | 4 | 5 -> mutate_change_unary expr   (* 30%: swap unary ops *)
-    | 6 | 7 | 8 -> mutate_change_binary expr  (* 30%: swap binary ops *)
+    | 0 | 1 -> mutate_simplify expr           (* 20%: simplify *)
+    | 2 | 3 -> mutate_replace expr            (* 20%: replace subtree *)
+    | 4 | 5 | 6 -> mutate_change_unary expr   (* 30%: swap unary ops *)
+    | 7 | 8 -> mutate_change_binary expr      (* 20%: swap binary ops *)
     | _ -> mutate_constants expr 0.5          (* 10%: tweak constants *)
 
 (** Apply multiple mutations to create variation *)
-let mutate_multi expr num_mutations =
+let mutate_multi ?(mode=Maintain) expr num_mutations =
   let rec loop e n =
     if n <= 0 then e
-    else loop (mutate e) (n - 1)
+    else loop (mutate ~mode e) (n - 1)
   in
   loop expr num_mutations
 
 (** Generate n distinct mutations of an expression *)
-let generate_variants base_expr n =
+let generate_variants ?(mode=Maintain) base_expr n =
   let variants = Array.make n base_expr in
-  let base_size = count_nodes base_expr in
   for i = 0 to n - 1 do
-    (* Apply more mutations for smaller expressions to encourage growth *)
-    (* Also vary the number of mutations to create diversity *)
-    let num_mutations =
-      if base_size < 5 then 2 + random_int 4        (* 2-5 mutations for tiny *)
-      else if base_size < 15 then 2 + random_int 3  (* 2-4 mutations for small *)
-      else 1 + random_int 3                          (* 1-3 mutations for larger *)
-    in
-    variants.(i) <- mutate_multi base_expr num_mutations
+    (* Vary the number of mutations to create diversity *)
+    let num_mutations = 1 + random_int 3 in  (* 1-3 mutations *)
+    variants.(i) <- mutate_multi ~mode base_expr num_mutations
   done;
   (* Ensure all are distinct by checking string representation *)
   let seen = Hashtbl.create n in
@@ -350,7 +358,7 @@ let generate_variants base_expr n =
       let rec try_new attempts =
         if attempts > 10 then variants.(i)
         else
-          let v = mutate_multi base_expr (1 + random_int 4) in
+          let v = mutate_multi ~mode base_expr (1 + random_int 4) in
           let sv = to_string v in
           if Hashtbl.mem seen sv then try_new (attempts + 1)
           else (Hashtbl.add seen sv true; v)
