@@ -1,0 +1,3 @@
+(library
+ (name pic_breeder)
+ (public_name pic_breeder))

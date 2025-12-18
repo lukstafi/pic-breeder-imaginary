@@ -1,0 +1,4 @@
+(executable
+ (name main)
+ (public_name pic_breeder)
+ (libraries pic_breeder unix))

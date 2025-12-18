@@ -34,3 +34,6 @@ setup.log
 
 # Local OPAM switch
 _opam/
+
+# Generated output images (keep examples/ for README)
+output/
