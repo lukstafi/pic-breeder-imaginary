@@ -52,6 +52,7 @@ type state = {
   mutable viewport : viewport;
   mutable mode : app_mode;
   mutable edit_expr : expr option;  (* Expression being edited *)
+  mutable slider_range : float;     (* Current slider range for edit mode *)
 }
 
 let create_output_dir () =
@@ -114,6 +115,7 @@ let init_random () =
     viewport = default_viewport;
     mode = GridMode;
     edit_expr = None;
+    slider_range = 0.1;
   }
 
 (** Save current state to history before making changes *)
@@ -182,9 +184,16 @@ module Gui = struct
   let create_grid_layout_fn : (state -> L.t) ref = ref (fun _ -> failwith "not initialized")
   let switch_to_grid_fn : (state -> unit) ref = ref (fun _ -> ())
 
+  (* Forward declaration for recreating edit view *)
+  let recreate_edit_view_fn : (state -> int -> unit) ref = ref (fun _ _ -> ())
+
   (* Create edit mode view with sliders *)
   let create_edit_view state idx =
-    let expr = state.variants.(idx) in
+    (* Use current edit_expr if available (preserves edits), otherwise start fresh *)
+    let expr = match state.edit_expr with
+      | Some e -> e
+      | None -> state.variants.(idx)
+    in
     state.edit_expr <- Some expr;
 
     (* Main image area - larger *)
@@ -212,12 +221,12 @@ module Gui = struct
 
     let img_layout = L.resident ~w:img_size ~h:img_size img_widget in
 
-    (* Collect constants for sliders *)
+    (* Collect constants from current expression for sliders *)
     let constants = collect_constants expr in
     let num_constants = List.length constants in
 
-    (* Slider range: each constant gets ±0.1 around its original value *)
-    let slider_range = 0.1 in
+    (* Use slider_range from state *)
+    let slider_range = state.slider_range in
     let slider_steps = 1000 in  (* 1000 steps for fine control *)
 
     (* Create sliders for each constant (real and imaginary parts) *)
@@ -226,15 +235,15 @@ module Gui = struct
         [L.resident (W.label "No constants to edit")]
       else
         List.mapi (fun list_idx (const_idx, c) ->
-          (* Store original values for this constant *)
-          let re_orig = c.re in
-          let im_orig = c.im in
+          (* Current values become the center of the slider range *)
+          let re_center = c.re in
+          let im_center = c.im in
 
-          (* Slider starts at middle (500 out of 1000) representing original value *)
-          let re_label = W.label (Printf.sprintf "C%d Re: %.4f" (list_idx + 1) re_orig) in
+          (* Slider starts at middle (500 out of 1000) representing current value *)
+          let re_label = W.label (Printf.sprintf "C%d Re: %.4f" (list_idx + 1) re_center) in
           let re_slider = W.slider ~value:(slider_steps / 2) ~length:200 ~thickness:20 slider_steps in
 
-          let im_label = W.label (Printf.sprintf "C%d Im: %.4f" (list_idx + 1) im_orig) in
+          let im_label = W.label (Printf.sprintf "C%d Im: %.4f" (list_idx + 1) im_center) in
           let im_slider = W.slider ~value:(slider_steps / 2) ~length:200 ~thickness:20 slider_steps in
 
           (* Update function for sliders *)
@@ -242,11 +251,11 @@ module Gui = struct
             match state.edit_expr with
             | None -> ()
             | Some e ->
-              (* Map slider [0, slider_steps] to [orig - range, orig + range] *)
+              (* Map slider [0, slider_steps] to [center - range, center + range] *)
               let re_slider_val = Slider.value (W.get_slider re_slider) in
               let im_slider_val = Slider.value (W.get_slider im_slider) in
-              let re_val = re_orig +. slider_range *. (float_of_int (re_slider_val - slider_steps / 2) /. float_of_int (slider_steps / 2)) in
-              let im_val = im_orig +. slider_range *. (float_of_int (im_slider_val - slider_steps / 2) /. float_of_int (slider_steps / 2)) in
+              let re_val = re_center +. slider_range *. (float_of_int (re_slider_val - slider_steps / 2) /. float_of_int (slider_steps / 2)) in
+              let im_val = im_center +. slider_range *. (float_of_int (im_slider_val - slider_steps / 2) /. float_of_int (slider_steps / 2)) in
               W.set_text re_label (Printf.sprintf "C%d Re: %.4f" (list_idx + 1) re_val);
               W.set_text im_label (Printf.sprintf "C%d Im: %.4f" (list_idx + 1) im_val);
               let new_const = complex re_val im_val in
@@ -275,10 +284,11 @@ module Gui = struct
     in
 
     (* Back button *)
-    let back_btn = W.button "Back to Grid" in
+    let back_btn = W.button "Back" in
     let back_action _ _ _ =
       state.mode <- GridMode;
       state.edit_expr <- None;
+      state.slider_range <- 0.1;  (* Reset to default *)
       !switch_to_grid_fn state
     in
     W.add_connection back_btn (W.connect back_btn back_btn back_action T.buttons_up);
@@ -295,6 +305,25 @@ module Gui = struct
     in
     W.add_connection save_btn (W.connect save_btn save_btn save_action T.buttons_up);
 
+    (* Zoom In button (finer control - halve the range) *)
+    let zoom_in_btn = W.button "Zoom In" in
+    let zoom_in_action _ _ _ =
+      state.slider_range <- state.slider_range /. 2.0;
+      !recreate_edit_view_fn state idx
+    in
+    W.add_connection zoom_in_btn (W.connect zoom_in_btn zoom_in_btn zoom_in_action T.buttons_up);
+
+    (* Zoom Out button (coarser control - double the range) *)
+    let zoom_out_btn = W.button "Zoom Out" in
+    let zoom_out_action _ _ _ =
+      state.slider_range <- state.slider_range *. 2.0;
+      !recreate_edit_view_fn state idx
+    in
+    W.add_connection zoom_out_btn (W.connect zoom_out_btn zoom_out_btn zoom_out_action T.buttons_up);
+
+    (* Range label showing current slider range *)
+    let range_label = W.label (Printf.sprintf "Range: +/-%.4f" slider_range) in
+
     (* Expression label *)
     let expr_str = to_string expr in
     let truncated = if String.length expr_str > 50 then String.sub expr_str 0 50 ^ "..." else expr_str in
@@ -302,16 +331,27 @@ module Gui = struct
 
     (* Scrollable slider area *)
     let sliders_col = L.tower ~sep:5 slider_layouts in
-    let sliders_scroll = L.make_clip ~h:300 sliders_col in
+    let sliders_scroll = L.make_clip ~h:250 sliders_col in
 
     (* Right panel with sliders and buttons *)
     let right_panel = L.tower ~sep:10 [
       L.resident expr_label;
+      L.flat ~sep:10 [L.resident range_label; L.resident zoom_in_btn; L.resident zoom_out_btn];
       sliders_scroll;
       L.flat ~sep:10 [L.resident back_btn; L.resident save_btn]
     ] in
 
     L.flat ~sep:20 [img_layout; right_panel]
+
+  (* Function to recreate edit view (used by zoom buttons) *)
+  let recreate_edit_view state idx =
+    match !top_layout_ref with
+    | None -> ()
+    | Some top ->
+      let edit_layout = create_edit_view state idx in
+      L.set_rooms top [edit_layout]
+
+  let () = recreate_edit_view_fn := recreate_edit_view
 
   (* Create the main grid layout *)
   let create_grid_layout state =
