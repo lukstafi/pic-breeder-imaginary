@@ -66,7 +66,8 @@ let save_ppm_ascii filename img =
   close_out oc
 
 (** Render a grid of expressions (for selection panel) *)
-let render_grid ?(color_mode=ColorWheel) ?(cell_width=200) ?(cell_height=200)
+let render_grid ?(color_mode=ColorWheel) ?(x_range=(-2.0, 2.0)) ?(y_range=(-2.0, 2.0))
+                ?(cell_width=200) ?(cell_height=200)
                 ?(margin=5) cols rows exprs =
   let n = Array.length exprs in
   let total_width = cols * cell_width + (cols + 1) * margin in
@@ -82,7 +83,7 @@ let render_grid ?(color_mode=ColorWheel) ?(cell_width=200) ?(cell_height=200)
   for i = 0 to min n (cols * rows) - 1 do
     let row = i / cols in
     let col = i mod cols in
-    let cell_img = render_expr ~color_mode cell_width cell_height exprs.(i) in
+    let cell_img = render_expr ~color_mode ~x_range ~y_range cell_width cell_height exprs.(i) in
     let x_offset = margin + col * (cell_width + margin) in
     let y_offset = margin + row * (cell_height + margin) in
     (* Copy cell into grid *)
@@ -95,9 +96,10 @@ let render_grid ?(color_mode=ColorWheel) ?(cell_width=200) ?(cell_height=200)
   grid
 
 (** Render a grid with labels (numbers in corners) *)
-let render_grid_labeled ?(color_mode=ColorWheel) ?(cell_width=200) ?(cell_height=200)
+let render_grid_labeled ?(color_mode=ColorWheel) ?(x_range=(-2.0, 2.0)) ?(y_range=(-2.0, 2.0))
+                        ?(cell_width=200) ?(cell_height=200)
                         ?(margin=10) cols rows exprs =
-  let grid = render_grid ~color_mode ~cell_width ~cell_height ~margin cols rows exprs in
+  let grid = render_grid ~color_mode ~x_range ~y_range ~cell_width ~cell_height ~margin cols rows exprs in
   (* Simple number rendering - just mark corners with colored pixels *)
   let n = min (Array.length exprs) (cols * rows) in
   for i = 0 to n - 1 do
@@ -156,9 +158,9 @@ let render_grid_labeled ?(color_mode=ColorWheel) ?(cell_width=200) ?(cell_height
   grid
 
 (** Quick preview - render at low resolution *)
-let render_preview ?(color_mode=ColorWheel) expr =
-  render_expr ~color_mode 100 100 expr
+let render_preview ?(color_mode=ColorWheel) ?(x_range=(-2.0, 2.0)) ?(y_range=(-2.0, 2.0)) expr =
+  render_expr ~color_mode ~x_range ~y_range 100 100 expr
 
 (** High quality render *)
-let render_hq ?(color_mode=ColorWheel) expr =
-  render_expr ~color_mode 800 800 expr
+let render_hq ?(color_mode=ColorWheel) ?(x_range=(-2.0, 2.0)) ?(y_range=(-2.0, 2.0)) expr =
+  render_expr ~color_mode ~x_range ~y_range 800 800 expr
