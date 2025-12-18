@@ -1,4 +1,5 @@
-(** Pic Breeder - Interactive evolutionary art with complex expressions *)
+(** Pic Breeder - Interactive evolutionary art with complex expressions
+    GUI version using Bogue *)
 
 open Pic_breeder
 open Complex_expr
@@ -6,12 +7,18 @@ open Mutation
 open Color
 open Render
 
+module W = Bogue.Widget
+module L = Bogue.Layout
+module T = Bogue.Trigger
+module Main = Bogue.Main
+
 (** Configuration *)
 let grid_cols = 4
 let grid_rows = 3
 let num_variants = grid_cols * grid_rows
 let cell_width = 200
 let cell_height = 200
+let margin = 10
 let output_dir = "output"
 
 (** History entry for undo *)
@@ -23,12 +30,17 @@ type history_entry = {
 
 (** Viewport settings *)
 type viewport = {
-  center_x : float;  (* Real part of center *)
-  center_y : float;  (* Imaginary part of center *)
-  size : float;      (* Half-width of the view (default 2.0 for [-2,2] range) *)
+  center_x : float;
+  center_y : float;
+  size : float;
 }
 
 let default_viewport = { center_x = 0.0; center_y = 0.0; size = 2.0 }
+
+(** Application mode *)
+type app_mode =
+  | GridMode       (* Main grid selection mode *)
+  | EditMode of int  (* Editing a specific picture (index) *)
 
 (** Current state *)
 type state = {
@@ -36,8 +48,10 @@ type state = {
   mutable variants : expr array;
   mutable generation : int;
   mutable color_mode : color_mode;
-  mutable history : history_entry list;  (* Stack of previous states *)
+  mutable history : history_entry list;
   mutable viewport : viewport;
+  mutable mode : app_mode;
+  mutable edit_expr : expr option;  (* Expression being edited *)
 }
 
 let create_output_dir () =
@@ -50,27 +64,43 @@ let viewport_ranges vp =
   let y_range = (vp.center_y -. vp.size, vp.center_y +. vp.size) in
   (x_range, y_range)
 
-(** Save the current grid *)
-let save_grid state =
-  let filename = Printf.sprintf "%s/gen_%04d_grid.ppm" output_dir state.generation in
-  let (x_range, y_range) = viewport_ranges state.viewport in
-  let grid = render_grid_labeled ~color_mode:state.color_mode ~x_range ~y_range
-               ~cell_width ~cell_height grid_cols grid_rows state.variants in
-  save_ppm filename grid;
-  Printf.printf "Saved grid to %s\n%!" filename
+(** Convert our RGB image to SDL surface and then texture *)
+let render_to_texture renderer expr color_mode viewport width height =
+  let open Tsdl in
+  let (x_range, y_range) = viewport_ranges viewport in
+  let img = render_expr ~color_mode ~x_range ~y_range width height expr in
+  let img_height = Array.length img in
+  let img_width = if img_height > 0 then Array.length img.(0) else 0 in
 
-(** Save a high-quality version of a specific expression *)
-let save_hq state idx =
-  if idx >= 0 && idx < Array.length state.variants then begin
-    let expr = state.variants.(idx) in
-    let filename = Printf.sprintf "%s/gen_%04d_pic_%02d.ppm" output_dir state.generation (idx + 1) in
-    let (x_range, y_range) = viewport_ranges state.viewport in
-    let img = render_hq ~color_mode:state.color_mode ~x_range ~y_range expr in
-    save_ppm filename img;
-    Printf.printf "Saved high-quality image to %s\n%!" filename;
-    Printf.printf "Expression: %s\n%!" (to_string expr)
-  end else
-    Printf.printf "Invalid selection: %d (must be 1-%d)\n%!" (idx + 1) num_variants
+  (* Create RGB surface *)
+  match Sdl.create_rgb_surface ~w:img_width ~h:img_height ~depth:24
+          (Int32.of_int 0x0000FF) (Int32.of_int 0x00FF00)
+          (Int32.of_int 0xFF0000) Int32.zero with
+  | Error (`Msg e) -> failwith ("Failed to create surface: " ^ e)
+  | Ok surface ->
+    (* Lock surface for pixel access *)
+    (match Sdl.lock_surface surface with
+     | Error (`Msg e) -> failwith ("Failed to lock surface: " ^ e)
+     | Ok () ->
+       let pixels = Sdl.get_surface_pixels surface Bigarray.Int8_unsigned in
+       let pitch = Sdl.get_surface_pitch surface in
+       for y = 0 to img_height - 1 do
+         for x = 0 to img_width - 1 do
+           let c = img.(y).(x) in
+           let offset = y * pitch + x * 3 in
+           Bigarray.Array1.set pixels offset c.b;
+           Bigarray.Array1.set pixels (offset + 1) c.g;
+           Bigarray.Array1.set pixels (offset + 2) c.r;
+         done
+       done;
+       Sdl.unlock_surface surface);
+    match Sdl.create_texture_from_surface renderer surface with
+    | Error (`Msg e) ->
+      Sdl.free_surface surface;
+      failwith ("Failed to create texture: " ^ e)
+    | Ok texture ->
+      Sdl.free_surface surface;
+      texture
 
 (** Initialize with random expressions *)
 let init_random () =
@@ -82,6 +112,8 @@ let init_random () =
     color_mode = ColorWheel;
     history = [];
     viewport = default_viewport;
+    mode = GridMode;
+    edit_expr = None;
   }
 
 (** Save current state to history before making changes *)
@@ -96,186 +128,398 @@ let push_history state =
 (** Undo to previous state *)
 let undo state =
   match state.history with
-  | [] ->
-    Printf.printf "Nothing to undo.\n%!"
+  | [] -> false
   | entry :: rest ->
     state.current_expr <- entry.h_expr;
     state.variants <- entry.h_variants;
     state.generation <- entry.h_generation;
     state.history <- rest;
-    Printf.printf "\n=== Undo to Generation %d ===\n%!" state.generation;
-    Printf.printf "Expression: %s\n%!" (to_string state.current_expr);
-    Printf.printf "History depth: %d\n%!" (List.length state.history);
-    save_grid state
+    true
 
 (** Evolve from a selected picture *)
 let evolve state selection =
   if selection >= 0 && selection < Array.length state.variants then begin
-    push_history state;  (* Save state before evolving *)
+    push_history state;
     state.current_expr <- state.variants.(selection);
     state.variants <- generate_variants state.current_expr num_variants;
-    (* Keep the parent as the first variant for reference *)
     state.variants.(0) <- state.current_expr;
     state.generation <- state.generation + 1;
-    Printf.printf "\n=== Generation %d ===\n%!" state.generation;
-    Printf.printf "Evolved from: %s\n%!" (to_string state.current_expr);
-    save_grid state
+    true
   end else
-    Printf.printf "Invalid selection: %d (must be 1-%d)\n%!" (selection + 1) num_variants
+    false
 
-(** Print help *)
-let print_help state =
-  Printf.printf "\n";
-  Printf.printf "=== Pic Breeder Commands ===\n";
-  Printf.printf "  1-12     : Select picture and evolve\n";
-  Printf.printf "  u        : Undo (go back to previous generation)\n";
-  Printf.printf "  s 1-12   : Save high-quality version of picture\n";
-  Printf.printf "  c <mode> : Change color mode (wheel, coords, vibrant, rainbow, fire, ice, twilight)\n";
-  Printf.printf "  v x y    : Set viewport center (e.g., 'v 1 0.5' centers at 1+0.5i)\n";
-  Printf.printf "  v        : Reset viewport to origin (0, 0)\n";
-  Printf.printf "  r        : Reset with new random expressions\n";
-  Printf.printf "  g        : Regenerate grid (same parent, new mutations)\n";
-  Printf.printf "  p        : Print current expressions\n";
-  Printf.printf "  h        : Show this help\n";
-  Printf.printf "  q        : Quit\n";
-  Printf.printf "\n";
-  Printf.printf "Current viewport: center=(%.2f, %.2f), size=%.1f\n%!"
-    state.viewport.center_x state.viewport.center_y state.viewport.size
+(** Save a high-quality version of a specific expression *)
+let save_hq_expr expr color_mode viewport filename =
+  let (x_range, y_range) = viewport_ranges viewport in
+  let img = render_hq ~color_mode ~x_range ~y_range expr in
+  save_ppm filename img;
+  Printf.printf "Saved: %s\n%!" filename
 
-(** Print all current expressions *)
-let print_expressions state =
-  Printf.printf "\n=== Current Expressions ===\n";
-  for i = 0 to Array.length state.variants - 1 do
-    Printf.printf "%2d: %s\n" (i + 1) (to_string state.variants.(i))
-  done;
-  Printf.printf "\n%!"
+(** GUI Application *)
+module Gui = struct
+  open Bogue
 
-(** Parse color mode *)
-let parse_color_mode s =
-  match String.lowercase_ascii (String.trim s) with
-  | "wheel" -> Some ColorWheel
-  | "coords" -> Some Coords
-  | "vibrant" -> Some Vibrant
-  | "rainbow" -> Some Rainbow
-  | "fire" -> Some Fire
-  | "ice" -> Some Ice
-  | "twilight" -> Some Twilight
-  | _ -> None
+  (* Reference for switching layouts *)
+  let top_layout_ref : L.t option ref = ref None
+  let board_ref : Main.board option ref = ref None
 
-(** Main REPL loop *)
-let rec main_loop state =
-  Printf.printf "> %!";
-  match In_channel.input_line In_channel.stdin with
-  | None -> Printf.printf "\nGoodbye!\n"
-  | Some line ->
-    let line = String.trim line in
-    if line = "" then main_loop state
+  (* Get grid cell index from position *)
+  let cell_from_pos x y =
+    let col = (x - margin) / (cell_width + margin) in
+    let row = (y - margin) / (cell_height + margin) in
+    if col < 0 || col >= grid_cols || row < 0 || row >= grid_rows then None
     else begin
-      begin match line with
-      | "q" | "quit" | "exit" ->
-        Printf.printf "Goodbye!\n";
-        exit 0
-      | "h" | "help" | "?" ->
-        print_help state
-      | "r" | "reset" ->
-        let new_state = init_random () in
-        state.current_expr <- new_state.current_expr;
-        state.variants <- new_state.variants;
-        state.generation <- 0;
-        Printf.printf "Reset to new random expressions\n%!";
-        save_grid state
-      | "g" | "regen" ->
-        push_history state;  (* Save state before regenerating *)
-        state.variants <- generate_variants state.current_expr num_variants;
-        state.variants.(0) <- state.current_expr;
-        Printf.printf "Regenerated mutations from current parent\n%!";
-        save_grid state
-      | "p" | "print" ->
-        print_expressions state
-      | "u" | "undo" ->
-        undo state
-      | _ ->
-        (* Try to parse as number or command *)
-        if String.length line >= 2 && line.[0] = 's' && line.[1] = ' ' then begin
-          (* Save command *)
-          try
-            let num = int_of_string (String.trim (String.sub line 2 (String.length line - 2))) in
-            save_hq state (num - 1)
-          with _ ->
-            Printf.printf "Invalid save command. Use: s <number>\n%!"
-        end
-        else if String.length line >= 2 && line.[0] = 'c' && line.[1] = ' ' then begin
-          (* Color mode command *)
-          let mode_str = String.sub line 2 (String.length line - 2) in
-          match parse_color_mode mode_str with
-          | Some mode ->
-            state.color_mode <- mode;
-            Printf.printf "Color mode set to: %s\n%!" (color_mode_to_string mode);
-            save_grid state
-          | None ->
-            Printf.printf "Unknown color mode: %s\n%!" mode_str;
-            Printf.printf "Available: wheel, coords, vibrant, rainbow, fire, ice, twilight\n%!"
-        end
-        else if line = "v" then begin
-          (* Reset viewport to origin *)
-          state.viewport <- default_viewport;
-          Printf.printf "Viewport reset to center=(0, 0)\n%!";
-          save_grid state
-        end
-        else if String.length line >= 2 && line.[0] = 'v' && line.[1] = ' ' then begin
-          (* Set viewport center: v x y *)
-          let args = String.sub line 2 (String.length line - 2) in
-          let parts = String.split_on_char ' ' (String.trim args) in
-          let parts = List.filter (fun s -> s <> "") parts in
-          match parts with
-          | [x_str; y_str] -> begin
-            try
-              let x = float_of_string x_str in
-              let y = float_of_string y_str in
-              state.viewport <- { state.viewport with center_x = x; center_y = y };
-              Printf.printf "Viewport center set to (%.2f, %.2f)\n%!" x y;
-              Printf.printf "Domain: [%.2f, %.2f] x [%.2f, %.2f]\n%!"
-                (x -. state.viewport.size) (x +. state.viewport.size)
-                (y -. state.viewport.size) (y +. state.viewport.size);
-              save_grid state
-            with _ ->
-              Printf.printf "Invalid coordinates. Use: v <x> <y> (e.g., v 1.5 -0.5)\n%!"
-            end
-          | _ ->
-            Printf.printf "Usage: v <x> <y> (e.g., 'v 1 0.5' centers at 1+0.5i)\n%!"
-        end
-        else begin
-          try
-            let num = int_of_string line in
-            if num >= 1 && num <= num_variants then
-              evolve state (num - 1)
-            else
-              Printf.printf "Please enter a number between 1 and %d\n%!" num_variants
-          with Failure _ ->
-            Printf.printf "Unknown command: %s (type 'h' for help)\n%!" line
-        end
-      end;
-      main_loop state
+      let cell_x = margin + col * (cell_width + margin) in
+      let cell_y = margin + row * (cell_height + margin) in
+      if x >= cell_x && x < cell_x + cell_width &&
+         y >= cell_y && y < cell_y + cell_height then
+        Some (row * grid_cols + col)
+      else
+        None
     end
 
-(** Entry point *)
+  (* Forward declarations for mutual recursion *)
+  let create_grid_layout_fn : (state -> L.t) ref = ref (fun _ -> failwith "not initialized")
+  let switch_to_grid_fn : (state -> unit) ref = ref (fun _ -> ())
+
+  (* Create edit mode view with sliders *)
+  let create_edit_view state idx =
+    let expr = state.variants.(idx) in
+    state.edit_expr <- Some expr;
+
+    (* Main image area - larger *)
+    let img_size = 400 in
+
+    (* Create the widget first, then get its internal sdl_area *)
+    let img_widget = W.sdl_area ~w:img_size ~h:img_size () in
+    let widget_area = W.get_sdl_area img_widget in
+
+    (* Draw function that renders the current edit expression *)
+    let draw_image renderer =
+      let open Tsdl in
+      match state.edit_expr with
+      | None -> ()
+      | Some e ->
+        (* Get the physical drawing size *)
+        let (phys_w, phys_h) = Sdl_area.drawing_size widget_area in
+        let texture = render_to_texture renderer e state.color_mode state.viewport phys_w phys_h in
+        let dst = Sdl.Rect.create ~x:0 ~y:0 ~w:phys_w ~h:phys_h in
+        ignore (Sdl.render_copy ~dst renderer texture);
+        Sdl.destroy_texture texture
+    in
+    (* Add the draw function to the widget's internal area *)
+    Sdl_area.add widget_area ~name:"edit_image" draw_image;
+
+    let img_layout = L.resident ~w:img_size ~h:img_size img_widget in
+
+    (* Collect constants for sliders *)
+    let constants = collect_constants expr in
+    let num_constants = List.length constants in
+
+    (* Slider range: each constant gets ±0.1 around its original value *)
+    let slider_range = 0.1 in
+    let slider_steps = 1000 in  (* 1000 steps for fine control *)
+
+    (* Create sliders for each constant (real and imaginary parts) *)
+    let slider_layouts =
+      if num_constants = 0 then
+        [L.resident (W.label "No constants to edit")]
+      else
+        List.mapi (fun list_idx (const_idx, c) ->
+          (* Store original values for this constant *)
+          let re_orig = c.re in
+          let im_orig = c.im in
+
+          (* Slider starts at middle (500 out of 1000) representing original value *)
+          let re_label = W.label (Printf.sprintf "C%d Re: %.4f" (list_idx + 1) re_orig) in
+          let re_slider = W.slider ~value:(slider_steps / 2) ~length:200 ~thickness:20 slider_steps in
+
+          let im_label = W.label (Printf.sprintf "C%d Im: %.4f" (list_idx + 1) im_orig) in
+          let im_slider = W.slider ~value:(slider_steps / 2) ~length:200 ~thickness:20 slider_steps in
+
+          (* Update function for sliders *)
+          let update_constant () =
+            match state.edit_expr with
+            | None -> ()
+            | Some e ->
+              (* Map slider [0, slider_steps] to [orig - range, orig + range] *)
+              let re_slider_val = Slider.value (W.get_slider re_slider) in
+              let im_slider_val = Slider.value (W.get_slider im_slider) in
+              let re_val = re_orig +. slider_range *. (float_of_int (re_slider_val - slider_steps / 2) /. float_of_int (slider_steps / 2)) in
+              let im_val = im_orig +. slider_range *. (float_of_int (im_slider_val - slider_steps / 2) /. float_of_int (slider_steps / 2)) in
+              W.set_text re_label (Printf.sprintf "C%d Re: %.4f" (list_idx + 1) re_val);
+              W.set_text im_label (Printf.sprintf "C%d Im: %.4f" (list_idx + 1) im_val);
+              let new_const = complex re_val im_val in
+              state.edit_expr <- Some (replace_constant const_idx new_const e);
+              (* Force redraw by clearing and re-adding the draw function *)
+              Sdl_area.clear widget_area;
+              Sdl_area.add widget_area ~name:"edit_image" draw_image;
+              Sdl_area.update widget_area
+          in
+
+          (* Connect sliders to update function *)
+          let action _ _ _ = update_constant () in
+          let conn_re = W.connect re_slider re_slider action Slider.triggers in
+          let conn_im = W.connect im_slider im_slider action Slider.triggers in
+          W.add_connection re_slider conn_re;
+          W.add_connection im_slider conn_im;
+
+          L.tower [
+            L.resident re_label;
+            L.resident re_slider;
+            L.resident im_label;
+            L.resident im_slider;
+            L.empty ~w:10 ~h:10 ()
+          ]
+        ) constants
+    in
+
+    (* Back button *)
+    let back_btn = W.button "Back to Grid" in
+    let back_action _ _ _ =
+      state.mode <- GridMode;
+      state.edit_expr <- None;
+      !switch_to_grid_fn state
+    in
+    W.add_connection back_btn (W.connect back_btn back_btn back_action T.buttons_up);
+
+    (* Save button *)
+    let save_btn = W.button "Save HQ" in
+    let save_action _ _ _ =
+      match state.edit_expr with
+      | None -> ()
+      | Some e ->
+        let filename = Printf.sprintf "%s/edited_gen_%04d_pic_%02d.ppm"
+                        output_dir state.generation (idx + 1) in
+        save_hq_expr e state.color_mode state.viewport filename
+    in
+    W.add_connection save_btn (W.connect save_btn save_btn save_action T.buttons_up);
+
+    (* Expression label *)
+    let expr_str = to_string expr in
+    let truncated = if String.length expr_str > 50 then String.sub expr_str 0 50 ^ "..." else expr_str in
+    let expr_label = W.label (Printf.sprintf "Expr: %s" truncated) in
+
+    (* Scrollable slider area *)
+    let sliders_col = L.tower ~sep:5 slider_layouts in
+    let sliders_scroll = L.make_clip ~h:300 sliders_col in
+
+    (* Right panel with sliders and buttons *)
+    let right_panel = L.tower ~sep:10 [
+      L.resident expr_label;
+      sliders_scroll;
+      L.flat ~sep:10 [L.resident back_btn; L.resident save_btn]
+    ] in
+
+    L.flat ~sep:20 [img_layout; right_panel]
+
+  (* Create the main grid layout *)
+  let create_grid_layout state =
+    let total_width = grid_cols * cell_width + (grid_cols + 1) * margin in
+    let total_height = grid_rows * cell_height + (grid_rows + 1) * margin in
+
+    let grid_widget = W.sdl_area ~w:total_width ~h:total_height () in
+    (* We need to set up drawing on the widget's internal sdl_area *)
+    let widget_area = W.get_sdl_area grid_widget in
+
+    (* Copy the draw function to the widget's area *)
+    let draw renderer =
+      let open Tsdl in
+      (* Get the physical drawing size to compute scale factor *)
+      let (phys_w, phys_h) = Sdl_area.drawing_size widget_area in
+      let scale_x = float_of_int phys_w /. float_of_int total_width in
+      let scale_y = float_of_int phys_h /. float_of_int total_height in
+
+      ignore (Sdl.set_render_draw_color renderer 40 40 40 255);
+      ignore (Sdl.render_clear renderer);
+      for i = 0 to num_variants - 1 do
+        let row = i / grid_cols in
+        let col = i mod grid_cols in
+        (* Scale logical coordinates to physical pixels *)
+        let x = int_of_float (float_of_int (margin + col * (cell_width + margin)) *. scale_x) in
+        let y = int_of_float (float_of_int (margin + row * (cell_height + margin)) *. scale_y) in
+        let w = int_of_float (float_of_int cell_width *. scale_x) in
+        let h = int_of_float (float_of_int cell_height *. scale_y) in
+        (* Render at physical size *)
+        let texture = render_to_texture renderer state.variants.(i)
+                        state.color_mode state.viewport w h in
+        let dst = Sdl.Rect.create ~x ~y ~w ~h in
+        ignore (Sdl.render_copy ~dst renderer texture);
+        Sdl.destroy_texture texture;
+        let num = i + 1 in
+        let hue = float_of_int (num * 30 mod 360) in
+        let indicator = hsv_to_rgb hue 1.0 1.0 in
+        ignore (Sdl.set_render_draw_color renderer indicator.r indicator.g indicator.b 255);
+        let box_x = int_of_float (float_of_int (margin + col * (cell_width + margin) + 2) *. scale_x) in
+        let box_y = int_of_float (float_of_int (margin + row * (cell_height + margin) + 2) *. scale_y) in
+        let box_size = int_of_float (14.0 *. scale_x) in
+        let box = Sdl.Rect.create ~x:box_x ~y:box_y ~w:box_size ~h:box_size in
+        ignore (Sdl.render_fill_rect renderer (Some box))
+      done
+    in
+    Sdl_area.add widget_area ~name:"grid" draw;
+
+    let grid_layout = L.resident ~w:total_width ~h:total_height grid_widget in
+
+    (* Status bar *)
+    let status = W.label (Printf.sprintf "Gen %d | %s | Click=evolve, Ctrl+Click=edit"
+                           state.generation (color_mode_to_string state.color_mode)) in
+    let status_layout = L.resident status in
+
+    (* Control buttons *)
+    let undo_btn = W.button "Undo" in
+    let reset_btn = W.button "Reset" in
+    let regen_btn = W.button "Regen" in
+    let color_btn = W.button "Color" in
+
+    (* Helper to refresh the grid *)
+    let refresh_grid () =
+      W.set_text status (Printf.sprintf "Gen %d | %s | Click=evolve, Ctrl+Click=edit"
+                          state.generation (color_mode_to_string state.color_mode));
+      Sdl_area.clear widget_area;
+      Sdl_area.add widget_area ~name:"grid" draw;
+      Sdl_area.update widget_area
+    in
+
+    (* Button actions *)
+    let undo_action _ _ _ =
+      if undo state then refresh_grid ()
+    in
+    W.add_connection undo_btn (W.connect undo_btn undo_btn undo_action T.buttons_up);
+
+    let reset_action _ _ _ =
+      let new_state = init_random () in
+      state.current_expr <- new_state.current_expr;
+      state.variants <- new_state.variants;
+      state.generation <- 0;
+      state.history <- [];
+      refresh_grid ()
+    in
+    W.add_connection reset_btn (W.connect reset_btn reset_btn reset_action T.buttons_up);
+
+    let regen_action _ _ _ =
+      push_history state;
+      state.variants <- generate_variants state.current_expr num_variants;
+      state.variants.(0) <- state.current_expr;
+      refresh_grid ()
+    in
+    W.add_connection regen_btn (W.connect regen_btn regen_btn regen_action T.buttons_up);
+
+    let color_action _ _ _ =
+      let modes = all_color_modes in
+      let current_idx = ref 0 in
+      Array.iteri (fun i m -> if m = state.color_mode then current_idx := i) modes;
+      let next_idx = (!current_idx + 1) mod Array.length modes in
+      state.color_mode <- modes.(next_idx);
+      refresh_grid ()
+    in
+    W.add_connection color_btn (W.connect color_btn color_btn color_action T.buttons_up);
+
+    (* Grid click handler *)
+    let grid_click_action _ _ ev =
+      let open Tsdl in
+      (* Get mouse position *)
+      let (mx, my) = Mouse.button_pos ev in
+      (* Get layout position *)
+      let lx = L.xpos grid_layout in
+      let ly = L.ypos grid_layout in
+      let rel_x = mx - lx in
+      let rel_y = my - ly in
+
+      match cell_from_pos rel_x rel_y with
+      | None -> ()
+      | Some idx ->
+        (* Check for Ctrl/Cmd modifier *)
+        let kmods = Sdl.get_mod_state () in
+        let ctrl_pressed = Sdl.Kmod.(kmods land (lctrl + rctrl + lgui + rgui)) <> Sdl.Kmod.none in
+
+        if ctrl_pressed then begin
+          (* Edit mode *)
+          Printf.printf "Edit mode: picture %d\n%!" (idx + 1);
+          state.mode <- EditMode idx;
+
+          (* Create edit view and switch to it *)
+          let edit_layout = create_edit_view state idx in
+          match !top_layout_ref with
+          | None -> ()
+          | Some top ->
+            L.set_rooms top [edit_layout]
+        end else begin
+          (* Evolve mode *)
+          if evolve state idx then begin
+            Printf.printf "Gen %d: Evolved from picture %d\n%!" state.generation (idx + 1);
+            refresh_grid ()
+          end
+        end
+    in
+    W.add_connection grid_widget (W.connect grid_widget grid_widget grid_click_action T.buttons_up);
+
+    let buttons_layout = L.flat ~sep:10 [
+      L.resident undo_btn;
+      L.resident reset_btn;
+      L.resident regen_btn;
+      L.resident color_btn;
+    ] in
+
+    L.tower ~sep:10 [
+      status_layout;
+      grid_layout;
+      buttons_layout;
+    ]
+
+  (* Set up the forward reference *)
+  let () = create_grid_layout_fn := create_grid_layout
+
+  (* Switch back to grid mode *)
+  let switch_to_grid state =
+    match !top_layout_ref with
+    | None -> ()
+    | Some top ->
+      let grid_layout = create_grid_layout state in
+      L.set_rooms top [grid_layout]
+
+  let () = switch_to_grid_fn := switch_to_grid
+
+  (* Main GUI entry point *)
+  let run () =
+    create_output_dir ();
+
+    let state = init_random () in
+
+    Printf.printf "=== Pic Breeder GUI ===\n";
+    Printf.printf "Click on a picture to evolve from it\n";
+    Printf.printf "Ctrl+Click (Cmd+Click on Mac) to enter edit mode\n%!";
+
+    (* Create initial layout *)
+    let inner_layout = create_grid_layout state in
+
+    (* Wrap in a container so we can swap contents *)
+    let top_layout = L.tower [inner_layout] in
+    top_layout_ref := Some top_layout;
+
+    (* Create shortcuts *)
+    let shortcuts = Main.shortcuts_empty () in
+    let shortcuts = Main.shortcuts_add shortcuts Tsdl.Sdl.K.escape (fun _ -> raise Main.Exit) in
+    let shortcuts = Main.shortcuts_add_ctrl shortcuts Tsdl.Sdl.K.z (fun _ ->
+      if undo state then begin
+        switch_to_grid state
+      end
+    ) in
+
+    (* Create and run the board *)
+    let board = Main.of_layout ~shortcuts top_layout in
+    board_ref := Some board;
+
+    Main.run board;
+    Main.quit ()
+
+end
+
+(** Entry point - run GUI by default *)
 let () =
-  Printf.printf "╔═══════════════════════════════════════════════════════════╗\n";
-  Printf.printf "║           PIC BREEDER - Evolutionary Complex Art          ║\n";
-  Printf.printf "╠═══════════════════════════════════════════════════════════╣\n";
-  Printf.printf "║  Evolve beautiful images from complex number expressions  ║\n";
-  Printf.printf "║  Each image maps z (pixel coordinate) through a formula   ║\n";
-  Printf.printf "║  and displays the result as a color.                      ║\n";
-  Printf.printf "╚═══════════════════════════════════════════════════════════╝\n";
-  Printf.printf "\n";
-
-  create_output_dir ();
-
-  let state = init_random () in
-  Printf.printf "=== Generation 0 ===\n";
-  Printf.printf "Starting with %d random expressions\n%!" num_variants;
-  save_grid state;
-  Printf.printf "\nImages saved to '%s/' directory.\n" output_dir;
-  Printf.printf "Open the grid image to see all options, then select a number.\n";
-  print_help state;
-  main_loop state
+  (* Check for --cli flag for command line mode *)
+  if Array.length Sys.argv > 1 && Sys.argv.(1) = "--cli" then begin
+    Printf.printf "CLI mode not available in GUI version.\n";
+    Printf.printf "Run without --cli for GUI mode.\n"
+  end else
+    Gui.run ()

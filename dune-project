@@ -19,4 +19,6 @@
  (description "A clone of the Pic Breeder project that evolves complex number expressions as pictures")
  (depends
   (ocaml (>= 4.14.0))
-  dune))
+  dune
+  bogue
+  tsdl))

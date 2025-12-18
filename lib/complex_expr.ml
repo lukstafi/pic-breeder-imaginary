@@ -192,3 +192,54 @@ let rec depth = function
   | Exp e | Log e | Sin e | Cos e | Sinh e | Cosh e | Tanh e
   | Sqrt e | Conj e | Abs e | Arg e | Re e | Im e | Spiral e | Wave e ->
     1 + depth e
+
+(** Extract all constants from an expression with their indices *)
+let collect_constants expr =
+  let rec aux idx expr acc =
+    match expr with
+    | Var -> (acc, idx)
+    | Const c -> ((idx, c) :: acc, idx + 1)
+    | Add (a, b) | Sub (a, b) | Mul (a, b) | Div (a, b) | Pow (a, b)
+    | Loop (a, b) ->
+      let (acc, idx) = aux idx a acc in
+      aux idx b acc
+    | Exp e | Log e | Sin e | Cos e | Sinh e | Cosh e | Tanh e
+    | Sqrt e | Conj e | Abs e | Arg e | Re e | Im e | Spiral e | Wave e ->
+      aux idx e acc
+  in
+  let (consts, _) = aux 0 expr [] in
+  List.rev consts
+
+(** Replace the constant at a given index with a new value *)
+let replace_constant idx new_val expr =
+  let counter = ref 0 in
+  let rec aux expr =
+    match expr with
+    | Var -> Var
+    | Const _ ->
+      let current = !counter in
+      incr counter;
+      if current = idx then Const new_val else expr
+    | Add (a, b) -> let a = aux a in let b = aux b in Add (a, b)
+    | Sub (a, b) -> let a = aux a in let b = aux b in Sub (a, b)
+    | Mul (a, b) -> let a = aux a in let b = aux b in Mul (a, b)
+    | Div (a, b) -> let a = aux a in let b = aux b in Div (a, b)
+    | Pow (a, b) -> let a = aux a in let b = aux b in Pow (a, b)
+    | Loop (a, b) -> let a = aux a in let b = aux b in Loop (a, b)
+    | Exp e -> Exp (aux e)
+    | Log e -> Log (aux e)
+    | Sin e -> Sin (aux e)
+    | Cos e -> Cos (aux e)
+    | Sinh e -> Sinh (aux e)
+    | Cosh e -> Cosh (aux e)
+    | Tanh e -> Tanh (aux e)
+    | Sqrt e -> Sqrt (aux e)
+    | Conj e -> Conj (aux e)
+    | Abs e -> Abs (aux e)
+    | Arg e -> Arg (aux e)
+    | Re e -> Re (aux e)
+    | Im e -> Im (aux e)
+    | Spiral e -> Spiral (aux e)
+    | Wave e -> Wave (aux e)
+  in
+  aux expr
