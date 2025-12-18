@@ -41,6 +41,7 @@ let default_viewport = { center_x = 0.0; center_y = 0.0; size = 2.0 }
 type app_mode =
   | GridMode       (* Main grid selection mode *)
   | EditMode of int  (* Editing a specific picture (index) *)
+  | TrophyMode     (* Trophy list management mode *)
 
 (** Current state *)
 type state = {
@@ -368,6 +369,119 @@ module Gui = struct
 
   let () = recreate_edit_view_fn := recreate_edit_view
 
+  (* Forward declaration for trophy view *)
+  let recreate_trophy_view_fn : (state -> unit) ref = ref (fun _ -> ())
+
+  (* Create trophy list management view *)
+  let create_trophy_view state =
+    let trophies = Mutation.get_trophy_list () in
+    let num_trophies = List.length trophies in
+
+    (* Trophy grid parameters - smaller cells, scrollable *)
+    let trophy_cols = 4 in
+    let trophy_cell_size = 150 in
+    let trophy_margin = 8 in
+
+    (* Back button *)
+    let back_btn = W.button "Back" in
+    let back_action _ _ _ =
+      state.mode <- GridMode;
+      !switch_to_grid_fn state
+    in
+    W.add_connection back_btn (W.connect back_btn back_btn back_action T.buttons_up);
+
+    let title = W.label (Printf.sprintf "Trophies (%d) - Click to remove" num_trophies) in
+
+    if num_trophies = 0 then
+      (* Empty state *)
+      let empty_label = W.label "No trophies yet. Ctrl+Click images in the main view to add them." in
+      L.tower ~sep:20 [
+        L.resident title;
+        L.resident empty_label;
+        L.resident back_btn
+      ]
+    else begin
+      (* Calculate grid dimensions *)
+      let trophy_rows = (num_trophies + trophy_cols - 1) / trophy_cols in
+      let grid_width = trophy_cols * trophy_cell_size + (trophy_cols + 1) * trophy_margin in
+      let grid_height = trophy_rows * trophy_cell_size + (trophy_rows + 1) * trophy_margin in
+
+      let grid_widget = W.sdl_area ~w:grid_width ~h:grid_height () in
+      let widget_area = W.get_sdl_area grid_widget in
+
+      (* Draw trophy grid *)
+      let draw renderer =
+        let open Tsdl in
+        let (phys_w, phys_h) = Sdl_area.drawing_size widget_area in
+        let scale_x = float_of_int phys_w /. float_of_int grid_width in
+        let scale_y = float_of_int phys_h /. float_of_int grid_height in
+
+        ignore (Sdl.set_render_draw_color renderer 30 30 30 255);
+        ignore (Sdl.render_clear renderer);
+
+        List.iteri (fun i expr ->
+          let row = i / trophy_cols in
+          let col = i mod trophy_cols in
+          let x = int_of_float (float_of_int (trophy_margin + col * (trophy_cell_size + trophy_margin)) *. scale_x) in
+          let y = int_of_float (float_of_int (trophy_margin + row * (trophy_cell_size + trophy_margin)) *. scale_y) in
+          let w = int_of_float (float_of_int trophy_cell_size *. scale_x) in
+          let h = int_of_float (float_of_int trophy_cell_size *. scale_y) in
+          let texture = render_to_texture renderer expr state.color_mode state.viewport w h in
+          let dst = Sdl.Rect.create ~x ~y ~w ~h in
+          ignore (Sdl.render_copy ~dst renderer texture);
+          Sdl.destroy_texture texture
+        ) trophies
+      in
+      Sdl_area.add widget_area ~name:"trophy_grid" draw;
+
+      (* Click handler to remove trophies *)
+      let grid_click_action _ _ ev =
+        let (mx, my) = Mouse.button_pos ev in
+        let rel_x = mx in
+        let rel_y = my in
+
+        (* Calculate which cell was clicked *)
+        let col = (rel_x - trophy_margin) / (trophy_cell_size + trophy_margin) in
+        let row = (rel_y - trophy_margin) / (trophy_cell_size + trophy_margin) in
+
+        if col >= 0 && col < trophy_cols && row >= 0 then begin
+          let idx = row * trophy_cols + col in
+          let current_trophies = Mutation.get_trophy_list () in
+          if idx < List.length current_trophies then begin
+            (* Check if click is within cell bounds *)
+            let cell_x = trophy_margin + col * (trophy_cell_size + trophy_margin) in
+            let cell_y = trophy_margin + row * (trophy_cell_size + trophy_margin) in
+            if rel_x >= cell_x && rel_x < cell_x + trophy_cell_size &&
+               rel_y >= cell_y && rel_y < cell_y + trophy_cell_size then begin
+              Printf.printf "Removing trophy %d\n%!" (idx + 1);
+              Mutation.remove_from_trophy_list idx;
+              !recreate_trophy_view_fn state
+            end
+          end
+        end
+      in
+      W.add_connection grid_widget (W.connect grid_widget grid_widget grid_click_action T.buttons_up);
+
+      let grid_layout = L.resident ~w:grid_width ~h:grid_height grid_widget in
+      let scroll_height = min 400 grid_height in
+      let grid_scroll = L.make_clip ~w:grid_width ~h:scroll_height grid_layout in
+
+      L.tower ~sep:10 [
+        L.resident title;
+        grid_scroll;
+        L.resident back_btn
+      ]
+    end
+
+  let recreate_trophy_view state =
+    match !top_layout_ref with
+    | None -> ()
+    | Some top ->
+      let trophy_layout = create_trophy_view state in
+      L.set_rooms top [trophy_layout]
+
+  let () = recreate_trophy_view_fn := recreate_trophy_view
+
   (* Create the main grid layout *)
   let create_grid_layout state =
     let total_width = grid_cols * cell_width + (grid_cols + 1) * margin in
@@ -493,6 +607,16 @@ module Gui = struct
     in
     W.add_connection complexity_btn (W.connect complexity_btn complexity_btn complexity_action T.buttons_up);
 
+    let trophy_btn = W.button "Trophies" in
+    let trophy_action _ _ _ =
+      state.mode <- TrophyMode;
+      let trophy_layout = create_trophy_view state in
+      match !top_layout_ref with
+      | None -> ()
+      | Some top -> L.set_rooms top [trophy_layout]
+    in
+    W.add_connection trophy_btn (W.connect trophy_btn trophy_btn trophy_action T.buttons_up);
+
     (* Grid click handler *)
     let grid_click_action _ _ ev =
       let open Tsdl in
@@ -541,6 +665,7 @@ module Gui = struct
       L.resident regen_btn;
       L.resident color_btn;
       L.resident complexity_btn;
+      L.resident trophy_btn;
     ] in
 
     L.tower ~sep:10 [

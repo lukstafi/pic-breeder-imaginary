@@ -59,6 +59,7 @@ The main window displays a 4x3 grid of expression variants. Each cell shows a re
 - **Regen** - Generate new mutations from the current parent
 - **Color** - Cycle through color modes (wheel, coords, vibrant, rainbow, fire, ice, twilight)
 - **Complexity** - Cycle mutation bias (Decrease, Maintain, Slow+, Fast+)
+- **Trophies** - View and manage the trophy list (click to remove)
 - **Ctrl+Z** - Keyboard shortcut for undo
 - **Escape** - Quit
 

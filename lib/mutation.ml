@@ -82,6 +82,18 @@ let add_to_trophy_list expr =
   if not already_exists then
     trophy_list := expr :: !trophy_list
 
+(** Get the current trophy list *)
+let get_trophy_list () = !trophy_list
+
+(** Remove an expression from the trophy list by index *)
+let remove_from_trophy_list idx =
+  let rec remove i = function
+    | [] -> []
+    | _ :: rest when i = idx -> rest
+    | x :: rest -> x :: remove (i + 1) rest
+  in
+  trophy_list := remove 0 !trophy_list
+
 (** Get a random expression from the trophy list *)
 let random_trophy () =
   let n = List.length !trophy_list in
