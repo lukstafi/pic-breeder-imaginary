@@ -138,12 +138,21 @@ let rec eval z = function
   | Wave e -> c_clamp (c_wave (eval z e))
   | Loop (n_expr, body) ->
     let n_val = eval z n_expr in
-    let iters = int_of_float (min 8.0 (max 0.0 (floor (c_abs n_val)))) in
+    let n_abs = min 8.0 (max 0.0 (c_abs n_val)) in
+    let n_floor = int_of_float (floor n_abs) in
+    let n_ceil = int_of_float (ceil n_abs) in
+    let frac = n_abs -. floor n_abs in
     let rec loop_iter i acc =
       if i <= 0 then acc
       else loop_iter (i - 1) (c_clamp (eval acc body))
     in
-    loop_iter iters z
+    let result_floor = loop_iter n_floor z in
+    if frac < 1e-9 then result_floor
+    else
+      let result_ceil = loop_iter n_ceil z in
+      (* Interpolate between floor and ceil results *)
+      c_add (c_mul { re = 1.0 -. frac; im = 0.0 } result_floor)
+            (c_mul { re = frac; im = 0.0 } result_ceil)
 
 (** Pretty print expression *)
 let rec to_string = function
