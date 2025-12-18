@@ -72,6 +72,30 @@ let binary_ops = [|
   (fun a b -> Min (a, b));
 |]
 
+(** Global trophy list for hybridization *)
+let trophy_list : expr list ref = ref []  (* Start empty, fallback to Im Var *)
+
+(** Add an expression to the trophy list (avoiding duplicates by string repr) *)
+let add_to_trophy_list expr =
+  let s = to_string expr in
+  let already_exists = List.exists (fun e -> to_string e = s) !trophy_list in
+  if not already_exists then
+    trophy_list := expr :: !trophy_list
+
+(** Get a random expression from the trophy list *)
+let random_trophy () =
+  let n = List.length !trophy_list in
+  if n = 0 then Im Var  (* Fallback for initial state *)
+  else List.nth !trophy_list (random_int n)
+
+(** Mutation: hybridize with a trophy expression *)
+let mutate_hybridize expr =
+  let trophy = random_trophy () in
+  let op = binary_ops.(random_int (Array.length binary_ops)) in
+  (* Randomly choose which side the current expression goes *)
+  if random_bool () then op expr trophy
+  else op trophy expr
+
 (** Generate a random simple expression *)
 let rec random_expr max_depth =
   if max_depth <= 1 then
@@ -327,15 +351,19 @@ let mutate ?(mode=Maintain) expr =
   let r = random_float 0.0 1.0 in
   if r < growth_factor then
     (* Growth-promoting mutations *)
-    match random_int 10 with
-    | 0 | 1 | 2 -> mutate_wrap expr           (* 30% of growth: add unary wrapper *)
-    | 3 | 4 | 5 -> mutate_insert_binary expr  (* 30% of growth: add binary op *)
-    | 6 | 7 ->                                 (* 20% of growth: replace with larger subtree *)
+    let trophy_count = List.length !trophy_list in
+    match random_int 12 with
+    | 0 | 1 | 2 -> mutate_wrap expr           (* 25% of growth: add unary wrapper *)
+    | 3 | 4 | 5 -> mutate_insert_binary expr  (* 25% of growth: add binary op *)
+    | 6 | 7 ->                                 (* ~17% of growth: replace with larger subtree *)
       let n = count_nodes expr in
       let idx = random_int n in
       let new_subtree = random_expr (3 + random_int 3) in  (* Larger subtrees *)
       replace_node expr idx new_subtree
-    | _ -> mutate_constants expr 0.3          (* 20% of growth: tweak constants *)
+    | 8 -> mutate_hybridize expr
+    | 9 when trophy_count >= 4 -> mutate_hybridize expr
+    | 10 when trophy_count >= 8 -> mutate_hybridize expr
+    | _ -> mutate_constants expr 0.3          (* remaining: tweak constants *)
   else
     (* Neutral or simplifying mutations *)
     match random_int 10 with

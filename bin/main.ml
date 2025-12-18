@@ -516,6 +516,9 @@ module Gui = struct
           Printf.printf "Edit mode: picture %d\n%!" (idx + 1);
           state.mode <- EditMode idx;
 
+          (* Add this expression to the trophy list for hybridization *)
+          Mutation.add_to_trophy_list state.variants.(idx);
+
           (* Create edit view and switch to it *)
           let edit_layout = create_edit_view state idx in
           match !top_layout_ref with
