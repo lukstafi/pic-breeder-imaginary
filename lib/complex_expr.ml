@@ -1,7 +1,7 @@
 (** Complex number expression AST and evaluation *)
 
 open Complex
-type complex = t
+type complex = t = { re : float ; im : float ; }
 
 let complex re im = { re; im }
 
