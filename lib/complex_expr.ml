@@ -1,33 +1,21 @@
 (** Complex number expression AST and evaluation *)
 
-type complex = { re : float; im : float }
+open Complex
+type complex = t
 
 let complex re im = { re; im }
-let zero = { re = 0.0; im = 0.0 }
-let one = { re = 1.0; im = 0.0 }
-let i = { re = 0.0; im = 1.0 }
 
-let c_add a b = { re = a.re +. b.re; im = a.im +. b.im }
-let c_sub a b = { re = a.re -. b.re; im = a.im -. b.im }
-let c_mul a b = { re = (a.re *. b.re) -. (a.im *. b.im);
-                  im = (a.re *. b.im) +. (a.im *. b.re) }
-let c_div a b =
-  let denom = (b.re *. b.re) +. (b.im *. b.im) in
-  if denom < 1e-10 then { re = 0.0; im = 0.0 }
-  else { re = ((a.re *. b.re) +. (a.im *. b.im)) /. denom;
-         im = ((a.im *. b.re) -. (a.re *. b.im)) /. denom }
+let c_add = add
+let c_sub = sub
+let c_mul = mul
+let c_div = div
 
-let c_abs z = sqrt ((z.re *. z.re) +. (z.im *. z.im))
-let c_arg z = atan2 z.im z.re
+let c_abs = norm
+let c_arg = arg
 
-let c_exp z =
-  let r = exp z.re in
-  { re = r *. cos z.im; im = r *. sin z.im }
+let c_exp = exp
 
-let c_log z =
-  let r = c_abs z in
-  if r < 1e-10 then zero
-  else { re = log r; im = c_arg z }
+let c_log = log
 
 let c_sin z =
   { re = sin z.re *. cosh z.im;
@@ -50,14 +38,10 @@ let c_tanh z =
   let c = c_cosh z in
   c_div s c
 
-let c_pow a b =
-  (* a^b = exp(b * log(a)) *)
-  if c_abs a < 1e-10 then zero
-  else c_exp (c_mul b (c_log a))
+let c_pow = pow
 
-let c_sqrt z = c_pow z (complex 0.5 0.0)
-
-let c_conj z = { re = z.re; im = -. z.im }
+let c_sqrt = sqrt
+let c_conj = conj
 
 let c_abs_c z = { re = c_abs z; im = 0.0 }
 let c_arg_c z = { re = c_arg z; im = 0.0 }
